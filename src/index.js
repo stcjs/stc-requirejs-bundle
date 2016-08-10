@@ -2,7 +2,7 @@ import Plugin from 'stc-plugin';
 import defaultOptions from './default_options';
 import {extend, isExist, isRegExp, isString, isArray, isObject, isEmpty} from 'stc-helper';
 import path from 'path';
-import {isInclude, findIncludePath, concatMaps, bundleContent, setBatchAdd} from './helper';
+import {isInclude, findIncludePath, concatMaps, bundleContent, setBatchAdd, copySetToArray} from './helper';
 
 const REGS = {
   MODULE: /(?:require(?:js)?|define)\s*\(/, // 是否为模块 ( Is it a module?)
@@ -13,9 +13,8 @@ const REGS = {
 const maxRecursionTime = 20;
 let options = null;
 let commonModuleMap = null;
+let commonModuleSet = null;
 let commonPathArr = [];
-let commonHandlingFlag = false;
-
 export default class RequirejsBundlePlugin extends Plugin {
   getModuleName(str) {
     str = str.replace(options.staticPath, '').replace('\.js', '');
@@ -45,13 +44,18 @@ export default class RequirejsBundlePlugin extends Plugin {
   parseCommonModules() {
     if(!isEmpty(commonModuleMap) || isEmpty(options.commonModule)) return;
     commonModuleMap = new Map();
+    commonModuleSet = new Set();
     let key = options.jsPath;
     let optCm = options.commonModule;
     if(isString(optCm)) {
       let commonSet = new Set();
-      commonSet.add(this.getModuleName(optCm));
+      let modulename = this.getModuleName(optCm);
+      commonSet.add(modulename);
+      commonModuleSet.add(modulename);
       commonModuleMap.set(key, commonSet);
+
       commonPathArr.push(key);
+      
     } else if(isObject(optCm)) {
       //check edge case
       
@@ -74,7 +78,9 @@ export default class RequirejsBundlePlugin extends Plugin {
           modules = [modules];
         }
         for(let item in modules) {
-          commonSet.add(this.getModuleName(item))
+          let modulename = this.getModuleName(item);
+          commonSet.add(modulename);
+          commonModuleSet.add(modulename);
         }
         commonModuleMap[path] = commonSet;
         commonPathArr.push(path);
@@ -82,7 +88,9 @@ export default class RequirejsBundlePlugin extends Plugin {
     } else if(isArray(optCm)){
       let commonSet = new Set();
       for(let item in optCm) {
-        commonSet.add(this.getModuleName(item));
+        let modulename = this.getModuleName(item);
+        commonSet.add(modulename);
+        commonModuleSet.add(modulename);
       }
       commonModuleMap = {
         [key]: commonSet
@@ -102,6 +110,13 @@ export default class RequirejsBundlePlugin extends Plugin {
       map.delete(moduleName);
     }
   }
+  isInCommonModuleSet() {
+    let modulename = this.getModuleName(this.file.path);
+    return commonModuleSet.has(modulename);
+  }
+  static once() {
+    return false;
+  }
   /**
    * run
    */
@@ -115,22 +130,26 @@ export default class RequirejsBundlePlugin extends Plugin {
     if(!commonModuleMap) {
       this.parseCommonModules();
     }
-    if(!commonHandlingFlag && !this._prop.iscommon) {
-      commonHandlingFlag = true;
-      for(let [path, commonSet] of commonModuleMap) {
-        for(let cmodulename of commonSet) {
-          let jsFile = await this.getFileByModuleName(cmodulename);
-          console.log(123, cmodulename);
-          let invokeResult = await this.invokeSelf(jsFile, {iscommon: true});
-          console.log(125, cmodulename);
-          let map = invokeResult.map;
-          let modules = map.keys();
-          //merge map keys into commonSet
-          setBatchAdd(commonSet, modules);
-        }
+    
+    if(!this.prop('iscommon')) {
+      if(this.isInCommonModuleSet()) {
+        return false;
       }
+      await this.await('generate_common_modules', async () => {
+         for(let [path, commonSet] of commonModuleMap) {
+           //make Set static, avoid repeating modules
+            let arr = copySetToArray(commonSet);
+            for(let cmodulename of arr) {
+              let jsFile = await this.getFileByModuleName(cmodulename);
+              let invokeResult = await this.invokeSelf(jsFile, {iscommon: true});
+              let map = invokeResult.map;
+              let modules = map.keys();
+              //merge map keys into commonSet
+              setBatchAdd(commonSet, modules);
+            }
+          }
+      });
     }
-    console.log(133, this.file.path);
     let content = await this.getContent('utf8');
     let modulename = this.getModuleName(this.file.path);
     let depMap = new Map();
@@ -139,18 +158,19 @@ export default class RequirejsBundlePlugin extends Plugin {
     let isDefineModule = content.match(REGS.DEFINE);
     let idExist = content.match(REGS.MODULEIDEXIST);
 
-    // when invokeself , check if it's matched against the include rule
+    // when invokeself , manually check if it's matched against the include rule
     if(!isInclude(this.file.path, options.include)) {
       depMap.set(modulename, content);
       return {map: depMap};
     }
-    // if is a normal file
+ 
     if(!isModule) {
       // return the content and a module definition.
       content = content+";window.define && define('"+modulename+"', function(){})";
       depMap.set(modulename, content);
       return {map: depMap};
     }
+    
     // get all the matched dependencies 
     let tmpContent = content;
     while(true) {
@@ -158,11 +178,13 @@ export default class RequirejsBundlePlugin extends Plugin {
       if(!match) {
         break;
       }
-      tmpContent = tmpContent.replace(match[0], '');
-      deps.push(match[1]);
+      tmpContent = tmpContent.replace(match[0], '').trim();
+      match[1] = match[1].trim();
+      if(match[1]) {
+        deps.push(match[1]);
+      }
     }
     deps = deps.join(',');
-  
     // give "define" a module name if has no one
     if(isDefineModule && !idExist) {
       content = content.replace(REGS.DEFINE, "define('"+modulename+"',"); 
@@ -171,13 +193,11 @@ export default class RequirejsBundlePlugin extends Plugin {
       //must give self-named module a new module name 
       content += ";define('"+modulename+"', function(){})";
     }
-
     // it's a termination of dependencies, i.e. it has no dependency
     if(isDefineModule && !deps) {
       depMap.set(modulename, content);
       return {map: depMap};
     }
-
     // we've handled terminate conditions of the recursion,
     // let's deal with dependencies now.
     if(deps) {
@@ -187,9 +207,8 @@ export default class RequirejsBundlePlugin extends Plugin {
         let childModuleName = item.replace(/'|"/g, "").trim();
         if(!childModuleName) continue;
         let jsFile = await this.getFileByModuleName(childModuleName);
-        let invokeResult = await this.invokeSelf(jsFile);
+        let invokeResult = await this.invokeSelf(jsFile, {iscommon: this.prop('iscommon')});
         let moduleMap = invokeResult.map;
-        
         // append child map to existing depMap. 
         // the Map merges duplicate modules automatically.
         depMap = concatMaps(depMap, moduleMap);
@@ -200,6 +219,7 @@ export default class RequirejsBundlePlugin extends Plugin {
         let commonSet = commonModuleMap.get(includePath);
         this.removeCommonModule(depMap, commonSet);
       }
+    
       // append the current module to map
       depMap.set(modulename, content);
       return {map: depMap};
@@ -213,6 +233,7 @@ export default class RequirejsBundlePlugin extends Plugin {
    * update
    */
   update(data) {
+    if(!data) return;
     if(data.error) {
       this.error(data.error, data.line, data.column);
     }

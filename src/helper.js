@@ -57,8 +57,14 @@ export function isInclude(filepath,include) {
 // implement it.
 export function concatMaps(mapA, mapB) {
   let mapC = new Map();
-  if(!mapA || !mapB) {
+  if(!mapA && !mapB) {
     return mapC;
+  }
+  if(!mapA) {
+    return mapB;
+  }
+  if(!mapB) {
+    return mapA;
   }
   for(let [kA, vA] of mapA) {
     mapC.set(kA, vA);
@@ -83,4 +89,14 @@ export function bundleContent(map) {
     str.push(item);
   }
   return str.join(';\n');
+}
+/*
+* just for elements of primitive values
+*/
+export function copySetToArray(set) {
+  let arr = [];
+  for(let item of set) {
+    arr.push(item);
+  }
+  return arr;
 }
