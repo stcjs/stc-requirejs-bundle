@@ -37,7 +37,7 @@ export default class RequirejsBundlePlugin extends Plugin {
     try {
       jsFile = await this.getFileByPath(jsPath);
     } catch(e) {
-        this.fatal('"' + modulename + '" doesn\'t exist in ' + this.file.path);
+      console.log(e);
     }
     return jsFile;
   }
@@ -105,6 +105,7 @@ export default class RequirejsBundlePlugin extends Plugin {
    * from the file's depMap
   */
   removeCommonModule(map, commonSet) {
+    if(!commonSet) return;
     for(let item of commonSet) {
       let moduleName = item;
       map.delete(moduleName);
@@ -112,7 +113,11 @@ export default class RequirejsBundlePlugin extends Plugin {
   }
   isInCommonModuleSet() {
     let modulename = this.getModuleName(this.file.path);
-    return commonModuleSet.has(modulename);
+    if(commonModuleSet) {
+      return commonModuleSet.has(modulename);
+    } else {
+      return false;
+    }
   }
   static once() {
     return false;
@@ -136,11 +141,13 @@ export default class RequirejsBundlePlugin extends Plugin {
         return false;
       }
       await this.await('generate_common_modules', async () => {
+        if(commonModuleMap) {
          for(let [path, commonSet] of commonModuleMap) {
            //make Set static, avoid repeating modules
             let arr = copySetToArray(commonSet);
             for(let cmodulename of arr) {
               let jsFile = await this.getFileByModuleName(cmodulename);
+              if(!jsFile) continue;
               let invokeResult = await this.invokeSelf(jsFile, {iscommon: true});
               let map = invokeResult.map;
               let modules = map.keys();
@@ -148,6 +155,7 @@ export default class RequirejsBundlePlugin extends Plugin {
               setBatchAdd(commonSet, modules);
             }
           }
+        }
       });
     }
     let content = await this.getContent('utf8');
@@ -163,7 +171,6 @@ export default class RequirejsBundlePlugin extends Plugin {
       depMap.set(modulename, content);
       return {map: depMap};
     }
- 
     if(!isModule) {
       // return the content and a module definition.
       content = content+";window.define && define('"+modulename+"', function(){})";
@@ -185,10 +192,15 @@ export default class RequirejsBundlePlugin extends Plugin {
       }
     }
     deps = deps.join(',');
+  
     // give "define" a module name if has no one
     if(isDefineModule && !idExist) {
       content = content.replace(REGS.DEFINE, "define('"+modulename+"',"); 
-    } else if(isDefineModule && idExist != modulename) {
+    } else if(isDefineModule && idExist[1] != modulename) {
+      if(this.file.path.match(/util/)) {
+        console.log(idExist, modulename);
+      }
+     
       //because other modules may not recognise self-defined module name,
       //must give self-named module a new module name 
       content += ";define('"+modulename+"', function(){})";
@@ -205,8 +217,9 @@ export default class RequirejsBundlePlugin extends Plugin {
       for(let index in depArr) {
         let item = depArr[index];
         let childModuleName = item.replace(/'|"/g, "").trim();
-        if(!childModuleName) continue;
+        if(!childModuleName || item.trim() == childModuleName) continue;
         let jsFile = await this.getFileByModuleName(childModuleName);
+        if(!jsFile) continue;
         let invokeResult = await this.invokeSelf(jsFile, {iscommon: this.prop('iscommon')});
         let moduleMap = invokeResult.map;
         // append child map to existing depMap. 
@@ -215,7 +228,7 @@ export default class RequirejsBundlePlugin extends Plugin {
       }
       //remove children in common modules
       let includePath = findIncludePath(modulename, commonPathArr);
-      if(includePath) {
+      if(includePath && commonModuleMap) {
         let commonSet = commonModuleMap.get(includePath);
         this.removeCommonModule(depMap, commonSet);
       }
@@ -223,10 +236,10 @@ export default class RequirejsBundlePlugin extends Plugin {
       // append the current module to map
       depMap.set(modulename, content);
       return {map: depMap};
-    } 
-    return {
-      error: 'just error'
     }
+    depMap.set(modulename, content);
+    return {map: depMap};
+   
   }
  
   /**
@@ -238,7 +251,7 @@ export default class RequirejsBundlePlugin extends Plugin {
       this.error(data.error, data.line, data.column);
     }
     // output file
-    if(data.map) {
+    if(data.map && data.map instanceof Map) {
       this.setContent(bundleContent(data.map));
     }
   }
@@ -253,6 +266,6 @@ export default class RequirejsBundlePlugin extends Plugin {
    * use cache
    */
   static cache(){
-    return true;
+    return false;
   }
 }

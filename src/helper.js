@@ -30,7 +30,6 @@ export function findIncludePath(filepath,include) {
 }
 export function isInclude(filepath,include) {
   let matches;
-  // console.log(include);
   if(!include){
     return false;
   }
