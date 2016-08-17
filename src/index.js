@@ -2,7 +2,7 @@ import Plugin from 'stc-plugin';
 import defaultOptions from './default_options';
 import {extend, isExist, isRegExp, isString, isArray, isObject, isEmpty} from 'stc-helper';
 import path from 'path';
-import {isInclude, findIncludePath, concatMaps, bundleContent, setBatchAdd, copySetToArray} from './helper';
+import {isInclude, findIncludePath, concatMaps, bundleContent, setBatchAdd, copySetToArray, matchAll} from './helper';
 
 const REGS = {
   MODULE: /(?:require(?:js)?|define)\s*\(/, // 是否为模块 ( Is it a module?)
@@ -15,14 +15,16 @@ let options = null;
 let commonModuleMap = null;
 let commonModuleSet = null;
 let commonPathArr = [];
+
+let globalDependences = new Map();
 export default class RequirejsBundlePlugin extends Plugin {
   getModuleName(str) {
-    str = str.replace(options.staticPath, '').replace('\.js', '');
+    str = str.replace(options.baseUrl, '').replace('\.js', '');
     return str;
   }
   getRelativePath(str, toCurrent) {
     if(!/\.js$/.test(str)) {
-      str= options.staticPath + str +'.js';
+      str= options.baseUrl + str +'.js';
     }
     if(!toCurrent) {
       return str;
@@ -53,20 +55,17 @@ export default class RequirejsBundlePlugin extends Plugin {
       commonSet.add(modulename);
       commonModuleSet.add(modulename);
       commonModuleMap.set(key, commonSet);
-
       commonPathArr.push(key);
-      
     } else if(isObject(optCm)) {
       //check edge case
-      
       optCm.forEach((path, modules) => {
         let commonSet = new Set();
         path = path.trim();
-        if(path.lastIndexOf('/') != path.length-1) {
+        if(path.lastIndexOf('/') !== path.length-1) {
           path += '/';
         }
         //path must be child of options.jsPath;
-        if(path.indexOf(key) == -1) {
+        if(path.indexOf(key) === -1) {
           path = key + path;
         }
         //if not exist, log error.
@@ -122,6 +121,7 @@ export default class RequirejsBundlePlugin extends Plugin {
   static once() {
     return false;
   }
+ 
   /**
    * run
    */
@@ -162,65 +162,48 @@ export default class RequirejsBundlePlugin extends Plugin {
     let modulename = this.getModuleName(this.file.path);
     let depMap = new Map();
     let deps = [];
+    let existIds = [];
     let isModule = content.match(REGS.MODULE);
     let isDefineModule = content.match(REGS.DEFINE);
-    let idExist = content.match(REGS.MODULEIDEXIST);
-
-    // when invokeself , manually check if it's matched against the include rule
-    if(!isInclude(this.file.path, options.include)) {
-      depMap.set(modulename, content);
-      return {map: depMap};
-    }
+  
     if(!isModule) {
       // return the content and a module definition.
-      content = content+";window.define && define('"+modulename+"', function(){})";
+      content = content+';window.define && define(\''+modulename+'\', function(){})';
       depMap.set(modulename, content);
       return {map: depMap};
     }
     
     // get all the matched dependencies 
-    let tmpContent = content;
-    while(true) {
-      let match = tmpContent.match(REGS.DEPS);
-      if(!match) {
-        break;
-      }
-      tmpContent = tmpContent.replace(match[0], '').trim();
-      match[1] = match[1].trim();
-      if(match[1]) {
-        deps.push(match[1]);
-      }
-    }
+    deps = matchAll(content, REGS.DEPS);
     deps = deps.join(',');
-  
+    existIds = matchAll(content, REGS.MODULEIDEXIST);
+    
     // give "define" a module name if has no one
-    if(isDefineModule && !idExist) {
-      content = content.replace(REGS.DEFINE, "define('"+modulename+"',"); 
-    } else if(isDefineModule && idExist[1] != modulename) {
-      if(this.file.path.match(/util/)) {
-        console.log(idExist, modulename);
-      }
-     
+    if(isDefineModule && !existIds.length) {
+      content = content.replace(REGS.DEFINE, 'define(\''+modulename+'\','); 
+    } else if(isDefineModule && existIds.indexOf(modulename) === -1) {
       //because other modules may not recognise self-defined module name,
       //must give self-named module a new module name 
-      content += ";define('"+modulename+"', function(){})";
+      content += ';define(\''+modulename+'\', function(){})';
     }
+
     // it's a termination of dependencies, i.e. it has no dependency
     if(isDefineModule && !deps) {
       depMap.set(modulename, content);
       return {map: depMap};
     }
+
     // we've handled terminate conditions of the recursion,
     // let's deal with dependencies now.
     if(deps) {
       let depArr = deps.split(',');
       for(let index in depArr) {
         let item = depArr[index];
-        let childModuleName = item.replace(/'|"/g, "").trim();
-        if(!childModuleName || item.trim() == childModuleName) continue;
+        let childModuleName = item.replace(/'|"/g, '').trim();
+        if(!childModuleName || item.trim() === childModuleName) continue;
         let jsFile = await this.getFileByModuleName(childModuleName);
         if(!jsFile) continue;
-        let invokeResult = await this.invokeSelf(jsFile, {iscommon: this.prop('iscommon')});
+        let invokeResult = await this.invokeSelf(jsFile, {iscommon: this.prop('iscommon'), _from: this.file.path});
         let moduleMap = invokeResult.map;
         // append child map to existing depMap. 
         // the Map merges duplicate modules automatically.
@@ -232,16 +215,15 @@ export default class RequirejsBundlePlugin extends Plugin {
         let commonSet = commonModuleMap.get(includePath);
         this.removeCommonModule(depMap, commonSet);
       }
-    
+      
       // append the current module to map
       depMap.set(modulename, content);
+     
       return {map: depMap};
     }
     depMap.set(modulename, content);
     return {map: depMap};
-   
   }
- 
   /**
    * update
    */
@@ -251,21 +233,36 @@ export default class RequirejsBundlePlugin extends Plugin {
       this.error(data.error, data.line, data.column);
     }
     // output file
+    if(!isInclude(this.file.path, options.include)) {
+      return;
+    }
     if(data.map && data.map instanceof Map) {
-      this.setContent(bundleContent(data.map));
+      if(!globalDependences.has(this.file.path)) {
+          globalDependences.set(this.file.path, data.map);
+      }
+    }
+  }
+
+  static after(files, instance) {
+    for(let index in files) {
+      let file = files[index];
+      let path = file.path;
+      let map = globalDependences.get(path);
+      let content = bundleContent(map);
+      file.setContent(content);
     }
   }
 
   /**
    * use cluster
    */
-  static cluster(){
+  static cluster() {
     return false;
   }
   /**
    * use cache
    */
-  static cache(){
+  static cache() {
     return false;
   }
 }

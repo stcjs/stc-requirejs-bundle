@@ -2,7 +2,6 @@ import {isRegExp, isString, isArray} from 'stc-helper';
 
 export function findIncludePath(filepath,include) {
   let matches;
-  // console.log(include);
   if(!include){
     return false;
   }
@@ -18,7 +17,7 @@ export function findIncludePath(filepath,include) {
         return true;
       }
     }
-    if(isString(item) && filepath.indexOf(item) == 0) {
+    if(isString(item) && filepath.indexOf(item) === 0) {
       matchedPath = item;
       return true;
     }
@@ -59,18 +58,17 @@ export function concatMaps(mapA, mapB) {
   if(!mapA && !mapB) {
     return mapC;
   }
-  if(!mapA) {
-    return mapB;
+  if(mapA) {
+     for(let [kA, vA] of mapA) {
+      mapC.set(kA, vA);
+    }
   }
-  if(!mapB) {
-    return mapA;
+  if(mapB) {
+    for(let [kB, vB] of mapB) {
+      mapC.set(kB, vB);
+    }
   }
-  for(let [kA, vA] of mapA) {
-    mapC.set(kA, vA);
-  }
-  for(let [kB, vB] of mapB) {
-    mapC.set(kB, vB);
-  }
+  
   return mapC;
 }
 export function setBatchAdd(targetSet, sourceIterator) {
@@ -83,11 +81,12 @@ export function bundleContent(map) {
     return '';
   }
   let values = map.values();
+  let keys = map.keys();
   let str = [];
   for(let item of values) {
     str.push(item);
   }
-  return str.join(';\n');
+  return str.join(';');
 }
 /*
 * just for elements of primitive values
@@ -98,4 +97,21 @@ export function copySetToArray(set) {
     arr.push(item);
   }
   return arr;
+}
+
+export function matchAll(content, reg) {
+  let matchResult = [];
+  let tmpContent = content;
+  while(true) {
+    let match = tmpContent.match(reg);
+    if(!match) {
+      break;
+    }
+    tmpContent = tmpContent.replace(match[0], '').trim();
+    match[1] = match[1].trim();
+    if(match[1]) {
+      matchResult.push(match[1]);
+    }
+  }
+  return matchResult;
 }
