@@ -58,9 +58,9 @@ export default class RequirejsBundlePlugin extends Plugin {
       commonPathArr.push(key);
     } else if(isObject(optCm)) {
       //check edge case
-      optCm.forEach((path, modules) => {
+      for([oriPath, modules] in optCm)  {
         let commonSet = new Set();
-        path = path.trim();
+        let path = oriPath.trim();
         if(path.lastIndexOf('/') !== path.length-1) {
           path += '/';
         }
@@ -70,7 +70,7 @@ export default class RequirejsBundlePlugin extends Plugin {
         }
         //if not exist, log error.
         if(!isExist(path)) {
-          this.error(path+' doesn\'t exist');
+          // this.error(path+' doesn\'t exist');
         }
         // 'path' => 'js/page/common'
         if(!isArray(modules)) {
@@ -83,7 +83,7 @@ export default class RequirejsBundlePlugin extends Plugin {
         }
         commonModuleMap[path] = commonSet;
         commonPathArr.push(path);
-      });
+      };
     } else if(isArray(optCm)){
       let commonSet = new Set();
       for(let item in optCm) {
@@ -252,7 +252,9 @@ export default class RequirejsBundlePlugin extends Plugin {
       file.setContent(content);
     }
   }
-
+  static exclude() {
+    return /require\.js$/
+  }
   /**
    * use cluster
    */
