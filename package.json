@@ -1,7 +1,7 @@
 {
   "name": "stc-requirejs-bundle",
   "description": "bundle amd modules",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "author": {
     "name": "huangxiaolu",
     "email": "lu.huang90@gmail.com"
